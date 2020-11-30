@@ -1,4 +1,5 @@
 # StocBio_hp
+Example hyperparameter code for paper [Provably Faster Algorithms for Bilevel Optimization and Applications to Meta-Learning](https://arxiv.org/pdf/2010.07962.pdf)
 
 This repo is based on [HyperTorch](https://github.com/prolearner/hypertorch). We develop the stoc-Bio algorithm and compare it with different algorithms.
 
