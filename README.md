@@ -10,14 +10,14 @@ In the following, we provide some experiments to demonstrate the better performa
 
 We compare our algorithm to various hyperparameter baseline algorithms on newspaper dataset:
 
-<img src="./results/test_loss_alg.png" width="500">
+<img src="./results/test_loss_alg.png" width="350">
 
-We compare the performance of our algorithm with respect to different batch size:
+We evaluate the performance of our algorithm with respect to different batch sizes:
 
-<img src="./results/test_loss_batch.png" width="500">
+<img src="./results/test_loss_batch.png" width="350">
 
 The comparison results on MNIST dataset:
 
-<img src="./results/test_loss_mnist.png" width="500">
+<img src="./results/test_loss_mnist.png" width="350">
 
 This repo is still under construction and any comment is welcome! 
