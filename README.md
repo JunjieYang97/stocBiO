@@ -9,7 +9,7 @@ Our meta-learning part is built on [learn2learn](https://github.com/learnables/l
 In the following, we provide some experiments to demonstrate the better performance of the proposed stoc-BiO algorithm. 
 
 We compare our algorithm with different hyperparameter baseline algorithms on newspaper dataset:
-![Algorithm_Comparison](./results/test_loss_alg.png|width=100)
+![Algorithm_Comparison](./results/test_loss_alg.png){:height="50%" width="50%"}
 
 We compare the different batch size of our algorithm:
 ![Algorithm_Comparison](./results/test_loss_batch.png)
