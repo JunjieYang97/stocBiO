@@ -1,4 +1,4 @@
-# stocBiO, ITD-BiO and FO-ITD-BiO for hyperparameter optimization and meta-learning
+# Bilevel Optimizers stocBiO, ITD-BiO and FO-ITD-BiO for hyperparameter optimization and meta-learning
 Codes for paper [Bilevel Optimization: Nonasymptotic Analysis and Faster Algorithms](https://arxiv.org/pdf/2010.07962.pdf).
 
 ## stocBiO for hyperparameter optimization
