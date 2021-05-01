@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 import torchvision as tv
-from torch.autograd import grad
 
 import learn2learn as l2l
 from learn2learn.data.transforms import FusedNWaysKShots, LoadData, RemapLabels, ConsecutiveLabels
@@ -37,58 +36,23 @@ def accuracy(predictions, targets):
     predictions = predictions.argmax(dim=1).view(targets.shape)
     return (predictions == targets).sum().float() / targets.size(0)
 
-def task_adapt(loss, model, lr):
-    try:
-        gradients = grad(loss, model.parameters())
-    except RuntimeError:
-        traceback.print_exc()
-    
-    if gradients is not None:
-        params = list(model.parameters())
-        if not len(gradients) == len(list(params)):
-            msg = 'WARNING:Parameters and gradients have different length. ('
-            msg += str(len(params)) + ' vs ' + str(len(gradients)) + ')'
-            print(msg)
-        for p, g in zip(params, gradients):
-            p.grad = g
 
-    # Update the params
-    for param_key in model._parameters:
-        p = model._parameters[param_key]
-        if p is not None and p.grad is not None:
-            model._parameters[param_key] = p - lr * p.grad
-
-    # Second, handle the buffers if necessary
-    for buffer_key in model._buffers:
-        buff = model._buffers[buffer_key]
-        if buff is not None and buff.grad is not None:
-            model._buffers[buffer_key] = buff - lr * buff.grad
-
-    model._apply(lambda x: x)
-    
 def fast_adapt(batch,
-               head_dim,
+               learner,
                features,
                loss,
-               fast_lr,
                reg_lambda,
                adaptation_steps,
                shots,
                ways,
                device=None):
-                   
-    head = torch.nn.Linear(head_dim, ways)
-    head.to(device)
 
     data, labels = batch
     data, labels = data.to(device), labels.to(device)
-    # print('before_data_size=' + str(data.size(0)))
-    
     data = features(data)
 
     # Separate data into adaptation/evaluation sets
     adaptation_indices = np.zeros(data.size(0), dtype=bool)
-    # print('data_size=' + str(data.size(0)))
     adaptation_indices[np.arange(shots*ways) * 2] = True
     evaluation_indices = torch.from_numpy(~adaptation_indices)
     adaptation_indices = torch.from_numpy(adaptation_indices)
@@ -96,22 +60,37 @@ def fast_adapt(batch,
     evaluation_data, evaluation_labels = data[evaluation_indices], labels[evaluation_indices]
 
     for step in range(adaptation_steps):
-        train_error = loss(head(adaptation_data), adaptation_labels) 
-        task_adapt(train_error, head, fast_lr)
+        l2_reg = 0
+        for p in learner.parameters():
+            l2_reg += p.norm(2)
+        train_error = loss(learner(adaptation_data), adaptation_labels) + reg_lambda*l2_reg 
+        learner.adapt(train_error)
 
-    predictions = head(evaluation_data)
+    predictions = learner(evaluation_data)
     valid_error = loss(predictions, evaluation_labels)
     valid_accuracy = accuracy(predictions, evaluation_labels)
-    del head
+    
+    # weightnorms = 0  ## check whether d(y_N)/dx is computed or not.
+    # for p in learner.parameters():
+    #     weightnorms += p.norm()
+    
+    # weightnorms.backward()
+    
+    # for i in features.parameters():
+    #     print (i.grad)
+    
+    # for i in learner.parameters():
+    #     print (i.grad)
+        
+    
     return valid_error, valid_accuracy
-
 
 def main(
         ways=5,
         shots=5,
         meta_lr=0.001, 
         fast_lr=0.1,   # original 0.1
-        reg_lambda=0,
+        reg_lambda=0.01,
         adapt_steps=5, # original: 5
         meta_bsz=32,
         iters=1000, # orginal: 1000
@@ -119,7 +98,7 @@ def main(
         seed=42,
 ):
     
-    print('hlr='+str(meta_lr)+' flr='+str(fast_lr)+' reg='+str(reg_lambda))
+    # print('hlr='+str(meta_head_lr)+' flr='+str(fast_lr)+' reg='+str(reg_lambda))
     
     cuda = bool(cuda)
 
@@ -180,13 +159,18 @@ def main(
     features = l2l.vision.models.ConvBase(output_size=64, channels=3, max_pool=True)
     features = torch.nn.Sequential(features, Lambda(lambda x: x.view(-1, 256)))
     features.to(device)
-    head_dim = 256
+    head = torch.nn.Linear(256, ways)
+    head = l2l.algorithms.MAML(head, lr=fast_lr)
+    head.to(device)
     
     # Setup optimization
     all_parameters = list(features.parameters())
     
+    # optimizer = torch.optim.Adam(all_parameters, lr=meta_lr)
+    # optimizer = torch.optim.SGD(all_parameters, lr=0.1)
+    
+    ## use different learning rates for w and theta
     optimizer = torch.optim.Adam(all_parameters, lr=meta_lr)
-    # optimizer = torch.optim.SGD(all_parameters, lr=meta_lr)
     
     loss = nn.CrossEntropyLoss(reduction='mean')
     
@@ -207,12 +191,12 @@ def main(
         
         for task in range(meta_bsz):
             # Compute meta-training loss
+            learner = head.clone()
             batch = train_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -223,12 +207,12 @@ def main(
             meta_train_accuracy += evaluation_accuracy.item()
 
             # Compute meta-validation loss
+            learner = head.clone()
             batch = valid_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -238,12 +222,12 @@ def main(
             meta_valid_accuracy += evaluation_accuracy.item()
 
             # Compute meta-testing loss
+            learner = head.clone()
             batch = test_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -254,7 +238,6 @@ def main(
         
         training_accuracy[iteration] = meta_train_accuracy / meta_bsz
         test_accuracy[iteration] = meta_test_accuracy / meta_bsz
-        
 
         # Print some metrics
         print('\n')
@@ -269,6 +252,14 @@ def main(
         # Average the accumulated gradients and optimize
         for p in all_parameters:
             p.grad.data.mul_(1.0 / meta_bsz)
+            
+        # print('head')
+        # for p in list(head.parameters()):
+        #     print(torch.max(torch.abs(p.grad.data)))
+            
+        # print('feature')
+        # for p in list(features.parameters()):
+        #     print(torch.max(torch.abs(p.grad.data)))
         
         optimizer.step()
         end_time = time.time()
@@ -300,14 +291,15 @@ if __name__ == '__main__':
         train_accuracy.append(training_accuracy)
         test_accuracy.append(testing_accuracy)
         run_time.append(running_time)
-    
+        
     # save 
     # from datetime import datetime
     # now = datetime.now()
     # current_time = now.strftime("%H:%M:%S")
     
+    
     pstr = '_lr_' + str(lr) + '_fastlr_' + str(fastlr) + '_steps_' + str(stp)
-
+    
     with open('exp_data/train_accuracy' + pstr, 'wb') as f:
         pickle.dump(train_accuracy, f)
         
@@ -317,4 +309,5 @@ if __name__ == '__main__':
     with open('exp_data/run_time' + pstr, 'wb') as f:
         pickle.dump(run_time, f)
         
+    
     
