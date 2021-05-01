@@ -1,4 +1,4 @@
-# Efficient bilevel Optimizers stocBiO, ITD-BiO, FO-ITD-BiO.
+# Efficient bilevel Optimizers stocBiO, ITD-BiO and FO-ITD-BiO.
 Codes for paper [Bilevel Optimization: Nonasymptotic Analysis and Faster Algorithms](https://arxiv.org/pdf/2010.07962.pdf).
 
 ## stocBiO for hyperparameter optimization
