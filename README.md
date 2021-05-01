@@ -1,4 +1,4 @@
-# stocBiO and ITD-BiO for hyperparameter optimization and meta-learning
+# stocBiO, ITD-BiO and FO-ITD-BiO for hyperparameter optimization and meta-learning
 Codes for paper [Bilevel Optimization: Nonasymptotic Analysis and Faster Algorithms](https://arxiv.org/pdf/2010.07962.pdf).
 
 Our hyperparameter optimization implementation is bulit on [HyperTorch](https://github.com/prolearner/hypertorch), where we propose stoc-BiO algorithm with better performance than other bilevel algorithms.
