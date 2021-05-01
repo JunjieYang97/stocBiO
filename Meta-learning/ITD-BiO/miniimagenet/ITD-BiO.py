@@ -4,22 +4,19 @@
 """
 
 import os
-import traceback
 import random
-
 
 import numpy as np
 import matplotlib
 matplotlib.use('pdf')
 import matplotlib.pyplot as plt
-
 import torch
 from torch import nn
 import torchvision as tv
-from torch.autograd import grad
 
 import learn2learn as l2l
 from learn2learn.data.transforms import FusedNWaysKShots, LoadData, RemapLabels, ConsecutiveLabels, NWays, KShots
+# from learn2learn.data.transforms import NWays, KShots, LoadData, RemapLabels, ConsecutiveLabels
 
 from statistics import mean
 from copy import deepcopy
@@ -40,51 +37,17 @@ class Lambda(nn.Module):
 def accuracy(predictions, targets):
     predictions = predictions.argmax(dim=1).view(targets.shape)
     return (predictions == targets).sum().float() / targets.size(0)
-    
-    
-def task_adapt(loss, model, lr):
-    try:
-        gradients = grad(loss, model.parameters())
-    except RuntimeError:
-        traceback.print_exc()
-    
-    if gradients is not None:
-        params = list(model.parameters())
-        if not len(gradients) == len(list(params)):
-            msg = 'WARNING:Parameters and gradients have different length. ('
-            msg += str(len(params)) + ' vs ' + str(len(gradients)) + ')'
-            print(msg)
-        for p, g in zip(params, gradients):
-            p.grad = g
-
-    # Update the params
-    for param_key in model._parameters:
-        p = model._parameters[param_key]
-        if p is not None and p.grad is not None:
-            model._parameters[param_key] = p - lr * p.grad
-
-    # Second, handle the buffers if necessary
-    for buffer_key in model._buffers:
-        buff = model._buffers[buffer_key]
-        if buff is not None and buff.grad is not None:
-            model._buffers[buffer_key] = buff - lr * buff.grad
-
-    model._apply(lambda x: x)
 
 
 def fast_adapt(batch,
-               head_dim,
+               learner,
                features,
                loss,
-               fast_lr,
                reg_lambda,
                adaptation_steps,
                shots,
                ways,
                device=None):
-                   
-    head = torch.nn.Linear(head_dim, ways)
-    head.to(device)
 
     data, labels = batch
     data, labels = data.to(device), labels.to(device)
@@ -102,20 +65,22 @@ def fast_adapt(batch,
     evaluation_data, evaluation_labels = data[evaluation_indices], labels[evaluation_indices]
 
     for step in range(adaptation_steps):
-        train_error = loss(head(adaptation_data), adaptation_labels) 
-        task_adapt(train_error, head, fast_lr)
+        l2_reg = 0
+        for p in learner.parameters():
+            l2_reg += p.norm(2)
+        train_error = loss(learner(adaptation_data), adaptation_labels) + reg_lambda*l2_reg 
+        learner.adapt(train_error)
 
-    predictions = head(evaluation_data)
+    predictions = learner(evaluation_data)
     valid_error = loss(predictions, evaluation_labels)
     valid_accuracy = accuracy(predictions, evaluation_labels)
-    del head
     return valid_error, valid_accuracy
 
 
 def main(
         ways=5,
         shots=5,
-        meta_lr=0.001, 
+        meta_lr=0.002, 
         fast_lr=0.1,   # original 0.1
         reg_lambda=0,
         adapt_steps=5, # original: 5
@@ -124,8 +89,6 @@ def main(
         cuda=1,
         seed=42,
 ):
-    
-    print('hlr='+str(meta_lr)+' flr='+str(fast_lr)+' reg='+str(reg_lambda))
     
     cuda = bool(cuda)
 
@@ -137,8 +100,6 @@ def main(
         torch.cuda.manual_seed(seed)
         device = torch.device('cuda')
 
-    # Create Datasets
-    
     train_dataset = l2l.vision.datasets.MiniImagenet(root='~/data', mode='train')
     valid_dataset = l2l.vision.datasets.MiniImagenet(root='~/data', mode='validation')
     test_dataset = l2l.vision.datasets.MiniImagenet(root='~/data', mode='test')
@@ -183,13 +144,23 @@ def main(
     # Create model
     # features = l2l.vision.models.MiniImagenetCNN(ways)
     features = l2l.vision.models.ConvBase(output_size=32, channels=3, max_pool=True)
+    # for p in  features.parameters():
+    #     print(p.shape)
     features = torch.nn.Sequential(features, Lambda(lambda x: x.view(-1, 1600)))
     features.to(device)
-    head_dim = 1600
+    head = torch.nn.Linear(1600, ways)
+    head = l2l.algorithms.MAML(head, lr=fast_lr)
+    head.to(device)
     
     # Setup optimization
     all_parameters = list(features.parameters())
+    
+    # optimizer = torch.optim.Adam(all_parameters, lr=meta_lr)
+    
+    ## use different learning rates for w and theta
     optimizer = torch.optim.Adam(all_parameters, lr=meta_lr)
+    
+    
     loss = nn.CrossEntropyLoss(reduction='mean')
     
     training_accuracy =  torch.ones(iters)
@@ -209,12 +180,12 @@ def main(
         
         for task in range(meta_bsz):
             # Compute meta-training loss
+            learner = head.clone()
             batch = train_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -225,12 +196,12 @@ def main(
             meta_train_accuracy += evaluation_accuracy.item()
 
             # Compute meta-validation loss
+            learner = head.clone()
             batch = valid_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -240,12 +211,12 @@ def main(
             meta_valid_accuracy += evaluation_accuracy.item()
 
             # Compute meta-testing loss
+            learner = head.clone()
             batch = test_tasks.sample()
             evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               head_dim,
+                                                               learner,
                                                                features,
                                                                loss,
-                                                               fast_lr,
                                                                reg_lambda,
                                                                adapt_steps,
                                                                shots,
@@ -297,14 +268,13 @@ if __name__ == '__main__':
     lr = 0.002
     fastlr=0.05
     reg=0
-
     
     for seed in seeds: 
         training_accuracy,testing_accuracy, running_time = main(meta_lr=lr, 
                                                                 adapt_steps=stp, 
                                                                 fast_lr=fastlr, 
                                                                 reg_lambda=reg, 
-                                                                iters=3000, 
+                                                                iters=2000, 
                                                                 seed=seed)
         train_accuracy.append(training_accuracy)
         test_accuracy.append(testing_accuracy)
@@ -325,8 +295,4 @@ if __name__ == '__main__':
         
     with open('exp_data/run_time' + pstr, 'wb') as f:
         pickle.dump(run_time, f)
-        
     
-        
-    
-   
