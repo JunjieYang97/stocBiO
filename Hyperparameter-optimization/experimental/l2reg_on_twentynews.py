@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.datasets import fetch_20newsgroups_vectorized
+from stocBiO import *
 
 import torch.nn.functional as F
 import torch.optim as optim
@@ -15,7 +16,6 @@ import hypergrad as hg
 import numpy as np
 import time
 import os
-
 
 class CustomTensorIterator:
     def __init__(self, tensor_list, batch_size, **loader_kwargs):
@@ -35,12 +35,14 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_steps', default=50, type=int, help='epoch numbers')
     parser.add_argument('--T', default=10, type=int, help='inner update iterations')
-    parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--val_size', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=100)
+    parser.add_argument('--val_size', type=int, default=100)
+    parser.add_argument('--spider_size', type=int, default=10)
     parser.add_argument('--eta', type=float, default=0.5, help='used in Hessian')
-    parser.add_argument('--K', type=int, default=10, help='number of steps to approximate hessian')
+    parser.add_argument('--hessian_q', type=int, default=10, help='number of steps to approximate hessian')
     # Only when alg == minibatch, we apply stochastic, otherwise, alg training with full batch
-    parser.add_argument('--alg', type=str, default='reverse', choices=['minibatch', 'reverse', 'fixed_point', 'CG', 'neuman'])
+    parser.add_argument('--alg', type=str, default='reverse', choices=['stocBiO', 'reverse', 'AID-FP', 'AID-CG'])
+    parser.add_argument('--training_size', type=int, default=2000)
     parser.add_argument('--inner_lr', type=float, default=100.0)
     parser.add_argument('--inner_mu', type=float, default=0.0)
     parser.add_argument('--outer_lr', type=float, default=100.0)
@@ -52,11 +54,17 @@ def parse_args():
     # inner_lr, inner_mu = 100., 0.9   # nice with 100., 0.9 (HeavyBall) tested with T, K = 5, 10 and CG
     # parser.add_argument('--seed', type=int, default=0)
 
+    if args.alg == 'stocBiO':
+        args.batch_size = args.batch_size
+    else:
+        args.batch_size = args.training_size
+        args.val_size = args.training_size
+
     if not args.save_folder:
         args.save_folder = './save_results'
-    args.model_name = '{}_bs_{}_vbs_{}_olrmu_{}_{}_ilrmu_{}_{}_eta_{}_T_{}_K_{}'.format(args.alg, 
+    args.model_name = '{}_bs_{}_vbs_{}_olrmu_{}_{}_ilrmu_{}_{}_eta_{}_T_{}_hessianq_{}'.format(args.alg, 
                        args.batch_size, args.val_size, args.outer_lr, args.outer_mu, args.inner_lr, 
-                       args.inner_mu, args.eta, args.T, args.K)
+                       args.inner_mu, args.eta, args.T, args.hessian_q)
     args.save_folder = os.path.join(args.save_folder, args.model_name)
     if not os.path.isdir(args.save_folder):
         os.makedirs(args.save_folder)
@@ -153,16 +161,26 @@ def train_model(args):
     
     # torch.DataLoader has problems with sparse tensor on GPU    
     iterators, train_list, val_list = [], [], []
+    xmb_train, xmb_val, ymb_train, ymb_val = [], [], [], []
     # For minibatch method, we build the list to store the splited tensor
-    if args.alg == 'minibatch':
+    if args.alg == 'stocBiO':
         for bs, x, y in [(len(y_train), x_train, y_train), (len(y_val), x_val, y_val)]:
             iterators.append(CustomTensorIterator([x, y], batch_size=args.batch_size, shuffle=True, **kwargs))
         train_iterator, val_iterator = iterators
         for _ in range(train_samples // args.batch_size+1):
-            train_list.append(next(train_iterator))
+            data_temp = next(train_iterator)
+            x_mb, y_mb = data_temp
+            xmb_train.append(x_mb)
+            ymb_train.append(y_mb)
+            # train_list.append(next(train_iterator))
         for _ in range(val_samples // args.val_size+1):
-            val_list.append(next(val_iterator))
-        train_list_len, val_list_len = len(train_list), len(val_list)
+            data_temp = next(val_iterator)
+            x_mb, y_mb = data_temp
+            xmb_val.append(x_mb)
+            ymb_val.append(y_mb)
+            # val_list.append(next(val_iterator))
+        train_list, val_list = [xmb_train, ymb_train], [xmb_val, ymb_val]
+        train_list_len, val_list_len = len(ymb_train), len(ymb_val)
 
         # set up another train_iterator & val_iterator to make sure train_list and val_list are full
         iterators = []
@@ -213,13 +231,15 @@ def train_model(args):
     loss_acc_time_results[0, 2] = 0.0
     
     for o_step in range(args.n_steps):
-        train_index_list = torch.randperm(train_list_len)
-        val_index_list = torch.randperm(val_list_len)
+        
         start_time = time.time()
-        if args.alg == 'minibatch':
+        if args.alg == 'stocBiO':
+            train_index_list = torch.randperm(train_list_len)
+            val_index = torch.randperm(val_list_len)
             inner_losses = []
             for t in range(args.T):
-                loss_train = train_loss(parameters, hparams, train_list[train_index_list[t%train_list_len]])
+                # loss_train = train_loss(parameters, hparams, train_list[train_index_list[t%train_list_len]])
+                loss_train = train_loss(parameters, hparams, [xmb_train[t%train_list_len], ymb_train[t%train_list_len]])
                 inner_grad = torch.autograd.grad(loss_train, parameters)
                 parameters[0] = parameters[0] - args.inner_lr*inner_grad[0]
                 inner_losses.append(loss_train)
@@ -227,30 +247,9 @@ def train_model(args):
                 if t % train_log_interval == 0 or t == args.T-1:
                     print('t={} loss: {}'.format(t, inner_losses[-1]))
 
-            # Gy_gradient
-            Gy_gradient = gradient_gy(args, parameters, val_list[val_index_list[0]], hparams)
-            Gy_gradient = torch.reshape(Gy_gradient, [-1])
-            G_gradient = torch.reshape(parameters[0], [-1]) - args.eta*Gy_gradient
+            outer_update = stocbio(parameters, hparams, val_list, args, out_f, reg_fs)
 
-            # Fy_gradient
-            Fy_gradient = gradient_fy(args, parameters, val_list[val_index_list[1%val_list_len]])
-            v_0 = torch.unsqueeze(torch.reshape(Fy_gradient, [-1]), 1).detach()
-
-            # Hessian
-            z_list = []
-            v_Q = args.eta*v_0
-            for q in range(args.K):
-                Jacobian = torch.matmul(G_gradient, v_0)
-                v_new = torch.autograd.grad(Jacobian, parameters, retain_graph=True)[0]
-                v_0 = torch.unsqueeze(torch.reshape(v_new, [-1]), 1).detach()
-                z_list.append(v_0)
-            v_Q = v_Q+torch.sum(torch.stack(z_list), dim=0)
-
-            # Gyx_gradient
-            Gy_gradient = gradient_gy(args, parameters, val_list[val_index_list[2%val_list_len]], hparams)
-            Gy_gradient = torch.reshape(Gy_gradient, [-1])
-            Gyx_gradient = torch.autograd.grad(torch.matmul(Gy_gradient, v_Q.detach()), hparams)[0]
-            hparams[0] = hparams[0] - args.outer_lr*(-Gyx_gradient)
+            hparams[0] = hparams[0] - args.outer_lr*outer_update
             final_params = parameters
             for p, new_p in zip(parameters, final_params[:len(parameters)]):
                 if warm_start:
@@ -258,6 +257,7 @@ def train_model(args):
                 else:
                     p.data = torch.zeros_like(p)
             val_loss(final_params, hparams)
+
         else:
             inner_losses = []
             if params_history:
@@ -274,13 +274,13 @@ def train_model(args):
             final_params = params_history[-1]
             outer_opt.zero_grad()
             if args.alg == 'reverse':
-                hg.reverse(params_history[-args.K-1:], hparams, [inner_opt]*args.K, val_loss)
-            elif args.alg == 'fixed_point':
-                hg.fixed_point(final_params, hparams, args.K, inner_opt, val_loss, stochastic=False, tol=tol)
-            elif args.alg == 'neuman':
-                hg.neumann(final_params, hparams, args.K, inner_opt, val_loss, tol=tol)
-            elif args.alg == 'CG':
-                hg.CG(final_params[:len(parameters)], hparams, args.K, inner_opt_cg, val_loss, stochastic=False, tol=tol)
+                hg.reverse(params_history[-args.hessian_q-1:], hparams, [inner_opt]*args.hessian_q, val_loss)
+            elif args.alg == 'AID-FP':
+                hg.fixed_point(final_params, hparams, args.hessian_q, inner_opt, val_loss, stochastic=False, tol=tol)
+            # elif args.alg == 'neuman':
+            #     hg.neumann(final_params, hparams, args.K, inner_opt, val_loss, tol=tol)
+            elif args.alg == 'AID-CG':
+                hg.CG(final_params[:len(parameters)], hparams, args.hessian_q, inner_opt_cg, val_loss, stochastic=False, tol=tol)
             outer_opt.step()
 
             for p, new_p in zip(parameters, final_params[:len(parameters)]):
@@ -311,53 +311,6 @@ def train_model(args):
     print(loss_acc_time_results)
     print('HPO ended in {:.2e} seconds\n'.format(total_time))
 
-    # plt.title('val_accuracy_'+str(args.alg))
-    # plt.plot(loss_acc_time_results[1:, 2], val_accs)
-    # plt.show()
-
-    # plt.title('test_accuracy_'+str(args.alg))
-    # plt.plot(loss_acc_time_results[1:, 2], test_accs)
-    # plt.show()
-
-    # # Final Train on both train and validation sets
-    # x_train_val = torch.cat([x_train, x_val], dim=0)
-    # y_train_val = torch.cat([y_train, y_val], dim=0)
-    # train_val_batch_size = len(x_train_val)
-
-
-    # if train_val_batch_size < len(y_train_val):
-    #     print('making iterator with batch size ', bs)
-    #     train_val_iterator = CustomTensorIterator([x_train_val, y_train_val], batch_size=train_val_batch_size, shuffle=True, **kwargs)
-    # else:
-    #     train_val_iterator = repeat([x_train_val, y_train_val])
-
-    # if args.inner_mu > 0:
-    #     # inner_opt = hg.Momentum(train_loss, inner_lr, inner_mu, data_or_iter=train_iterator)
-    #     inner_opt = hg.HeavyBall(train_loss, args.inner_lr, args.inner_mu, data_or_iter=train_val_iterator)
-    # else:
-    #     inner_opt = hg.GradientDescent(train_loss, args.inner_lr, data_or_iter=train_val_iterator)
-
-
-    # T_final = 4000
-    # w = torch.zeros(n_features, n_classes).requires_grad_(True)
-    # parameters = [w]
-
-    # if bias:
-    #     b = torch.zeros(n_classes).requires_grad_(True)
-    #     parameters.append(b)
-
-    # opt_params = inner_opt.get_opt_params(parameters)
-
-    # print('Final training on both train and validation sets with final hyperparameters')
-    # for t in range(T_final):
-    #     opt_params = inner_opt(opt_params, hparams, create_graph=False)
-    #     train_loss = inner_opt.curr_loss
-
-    #     if t % train_log_interval == 0 or t == T_final-1:
-    #         test_loss, test_acc = eval(opt_params[:len(parameters)], x_test, y_test)
-    #         print('t={} final loss: {}'.format(t, train_loss))
-    #         print('          Test loss: {}, Test Acc: {}'.format(test_loss, test_acc))
-
 
 def from_sparse(x):
     x = x.tocoo()
@@ -370,22 +323,11 @@ def from_sparse(x):
 
     return torch.sparse.FloatTensor(i, v, torch.Size(shape))
 
-def gradient_fy(args, parameters, data):
-    images, labels = data
-    out = out_f(images,  parameters)
-    loss = F.cross_entropy(out, labels)
-    grad = torch.autograd.grad(loss, parameters)[0]
-    return grad
 
 def train_loss(params, hparams, data):
     x_mb, y_mb = data
     out = out_f(x_mb,  params)
     return F.cross_entropy(out, y_mb) + reg_f(params, *hparams)
-
-def gradient_gy(args, parameters, data, weight):
-    train_loss_ = train_loss(parameters, weight, data)
-    grad = torch.autograd.grad(train_loss_, parameters, create_graph=True)[0]
-    return grad
 
 def val_loss(opt_params, hparams):
     x_mb, y_mb = next(val_iterator)
@@ -404,6 +346,10 @@ def reg_f(params, l2_reg_params, l1_reg_params=None):
     if l1_reg_params is not None:
         r += (params[0].abs() * torch.exp(l1_reg_params.unsqueeze(1) * ones_dxc)).mean()
     return r
+
+def reg_fs(params, hparams, loss):
+    reg = reg_f(params, *hparams)
+    return loss+reg
 
 def out_f(x, params):
     out = x @ params[0]
