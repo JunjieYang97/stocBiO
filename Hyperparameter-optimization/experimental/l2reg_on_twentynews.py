@@ -8,8 +8,6 @@ from stocBiO import *
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
-import matplotlib
-import matplotlib.pyplot as plt
 import argparse
 import torch
 import hypergrad as hg
@@ -33,11 +31,10 @@ class CustomTensorIterator:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_steps', default=50, type=int, help='epoch numbers')
+    parser.add_argument('--epochs', default=50, type=int, help='epoch numbers')
     parser.add_argument('--T', default=10, type=int, help='inner update iterations')
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--val_size', type=int, default=100)
-    parser.add_argument('--spider_size', type=int, default=10)
     parser.add_argument('--eta', type=float, default=0.5, help='used in Hessian')
     parser.add_argument('--hessian_q', type=int, default=10, help='number of steps to approximate hessian')
     # Only when alg == minibatch, we apply stochastic, otherwise, alg training with full batch
@@ -224,18 +221,17 @@ def train_model(args):
     inner_opt_cg = hg.GradientDescent(train_loss, 1., data_or_iter=train_iterator)
 
     total_time = 0
-    loss_acc_time_results = np.zeros((args.n_steps+1, 3))
+    loss_acc_time_results = np.zeros((args.epochs+1, 3))
     test_loss, test_acc = eval(parameters, x_test, y_test)
     loss_acc_time_results[0, 0] = test_loss
     loss_acc_time_results[0, 1] = test_acc
     loss_acc_time_results[0, 2] = 0.0
     
-    for o_step in range(args.n_steps):
-        
+    for o_step in range(args.epochs):
         start_time = time.time()
         if args.alg == 'stocBiO':
-            train_index_list = torch.randperm(train_list_len)
-            val_index = torch.randperm(val_list_len)
+            # train_index_list = torch.randperm(train_list_len)
+            # val_index = torch.randperm(val_list_len)
             inner_losses = []
             for t in range(args.T):
                 # loss_train = train_loss(parameters, hparams, train_list[train_index_list[t%train_list_len]])

@@ -1,5 +1,4 @@
 import os
-import logging
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,15 +6,11 @@ import torchvision.transforms as transforms
 import torch.backends.cudnn as cudnn
 import torch.optim
 import argparse
-import tensorboard_logger as tb_logger
 import hypergrad as hg
 import time
-import math
-
 from itertools import repeat
 from torch.nn import functional as F
 from torchvision import datasets
-from copy import deepcopy
 from stocBiO import *
 
 def parse_args():
@@ -60,6 +55,7 @@ def parse_args():
         os.makedirs(args.save_folder)
     return args
 
+
 def get_data_loaders(args):
     kwargs = {'num_workers': 0, 'pin_memory': True}
     dataset = datasets.MNIST(root=args.data_path, train=True, download=True,
@@ -84,7 +80,6 @@ def train_model(args, train_loader, test_loader):
     else:
         device = torch.device('cpu')
     
-    logger = tb_logger.Logger(logdir=args.save_folder)
     parameters = torch.randn((args.num_classes, 785), requires_grad=True)
     parameters = nn.init.kaiming_normal_(parameters, mode='fan_out').to(device)
     lambda_x = torch.zeros((args.training_size), requires_grad=True).to(device)
@@ -138,8 +133,6 @@ def train_model(args, train_loader, test_loader):
     outer_opt = torch.optim.SGD(lr=args.outer_lr, params=[lambda_x])
     
     start_time = time.time() 
-    c_1, c_2=1,1
-
     lambda_index_outer = 0
     for epoch in range(args.epochs):
         grad_norm_inner = 0.0
@@ -154,16 +147,12 @@ def train_model(args, train_loader, test_loader):
                 output = out_f(images, [parameters])
                 inner_update = gradient_gy(args, labels_cp, parameters, images, weight, output, reg_f)
                 parameters = parameters - args.inner_lr*inner_update
-                if index == args.iterations-1:
-                    grad_norm_inner = torch.norm(inner_update)
-                    print("Inner update: {:.4f}".format(grad_norm_inner))
         
         if args.alg == 'stocBiO':
             val_index = torch.randperm(args.validation_size//args.batch_size)
             val_data_list = build_val_data(args, val_index, images_list, labels_list, device)
             hparams = lambda_x[lambda_index_outer: lambda_index_outer+args.batch_size]
             outer_update = stocbio([parameters], hparams, val_data_list, args, out_f, reg_f)
-            print("Outer update: {:.4f}".format(torch.norm(outer_update)))
         
         elif args.alg == 'HOAG':
             images, labels = images_list[-1], labels_list[-1]
@@ -171,31 +160,12 @@ def train_model(args, train_loader, test_loader):
             images_temp, labels_temp = images[0:args.validation_size,:], labels[0:args.validation_size]
             images = torch.cat([images_temp]*(args.training_size // args.validation_size))
             labels = torch.cat([labels_temp]*(args.training_size // args.validation_size))
-
-            # Fy_gradient
+            
             labels = labels.to(device)
-            output = out_f(images, parameters)
-            Fy_gradient = gradient_fy(args, labels, parameters, images, output)
-            v_0 = torch.unsqueeze(torch.reshape(Fy_gradient, [-1]), 1).detach()
-
-            # Hessian
-            z_list = []
-            v_Q = args.eta*v_0
             labels_cp = nositify(labels, args.noise_rate, args.num_classes).to(device)
-            weight = lambda_x[lambda_index_outer: lambda_index_outer+args.batch_size]
-            output = out_f(images, parameters)
-            Gy_gradient = gradient_gy(args, labels_cp, parameters, images, weight, output, reg_f)
-            Gy_gradient = torch.reshape(Gy_gradient, [-1])
-            G_gradient = torch.reshape(parameters, [-1]) - args.eta*Gy_gradient
-            for q in range(args.hessian_q):
-                Jacobian = torch.matmul(G_gradient, v_0)
-                v_new = torch.autograd.grad(Jacobian, parameters, retain_graph=True)[0]
-                v_0 = torch.unsqueeze(torch.reshape(v_new, [-1]), 1).detach()
-                z_list.append(v_0)
-
-            v_Q = v_Q+torch.sum(torch.stack(z_list), dim=0)
-            Gyx_gradient = torch.autograd.grad(torch.matmul(Gy_gradient, v_Q.detach()), weight)[0]
-            outer_update = -Gyx_gradient
+            val_images_list, val_labels_list = [images,images,images], [labels,labels_cp,labels_cp]         
+            val_data_list = [val_images_list, val_labels_list]
+            outer_update = stocbio([parameters], lambda_x, val_data_list, args, out_f, reg_f)
 
         elif args.alg == 'BSA' or args.alg == 'TTSA':
             train_index_list = torch.randperm(args.training_size)
@@ -214,41 +184,25 @@ def train_model(args, train_loader, test_loader):
             random_list = np.random.uniform(size=[args.hessian_q+2])
             noise_rate_list = np.where((random_list>args.noise_rate), 0, 1)
 
-            # Fy_gradient
+            val_images_list, val_labels_list = [], []
             images, labels = images_list[val_index[1]], labels_list[val_index[1]]
             images = torch.reshape(images, (images.size()[0],-1)).to(device)
-            labels = labels.to(device)
-            output = out_f(images, [parameters])
-            Fy_gradient = gradient_fy(args, labels, parameters, images, output)
-            v_0 = torch.unsqueeze(torch.reshape(Fy_gradient, [-1]), 1).detach()
-            weight = lambda_x[lambda_index_outer: lambda_index_outer+args.batch_size]
-
-            # Hessian
-            z_list = []
-            v_Q = args.eta*v_0
+            val_images_list.append(images)
+            val_labels_list.append(labels.to(device))
             images, labels = images_list[val_index[2]], labels_list[val_index[2]]
             images = torch.reshape(images, (images.size()[0],-1)).to(device)
             labels_cp = nositify(labels, noise_rate_list[1], args.num_classes).to(device)
-            output = out_f(images, [parameters])
-            Gy_gradient = gradient_gy(args, labels_cp, parameters, images, weight, output, reg_f)
-            Gy_gradient = torch.reshape(Gy_gradient, [-1])
-            G_gradient = torch.reshape(parameters, [-1]) - args.eta*Gy_gradient
-            for q in range(args.hessian_q):
-                Jacobian = torch.matmul(G_gradient, v_0)
-                v_new = torch.autograd.grad(Jacobian, parameters, retain_graph=True)[0]
-                v_0 = torch.unsqueeze(torch.reshape(v_new, [-1]), 1).detach()
-                z_list.append(v_0)            
-            v_Q = v_Q+torch.sum(torch.stack(z_list), dim=0)
-
-            # Gyx_gradient
-            images, labels = images_list[val_index[0]], labels_list[val_index[0]]
+            val_images_list.append(images)
+            val_labels_list.append(labels)
+            images, labels = images_list[val_index[3]], labels_list[val_index[3]]
             images = torch.reshape(images, (images.size()[0],-1)).to(device)
-            labels_cp = nositify(labels, noise_rate_list[0], args.num_classes).to(device)
-            output = out_f(images, [parameters])
-            Gy_gradient = gradient_gy(args, labels_cp, parameters, images, weight, output, reg_f)
-            Gy_gradient = torch.reshape(Gy_gradient, [-1])
-            Gyx_gradient = torch.autograd.grad(torch.matmul(Gy_gradient, v_Q.detach()), weight)[0]
-            outer_update = -Gyx_gradient      
+            labels_cp = nositify(labels, noise_rate_list[2], args.num_classes).to(device)
+            val_images_list.append(images)
+            val_labels_list.append(labels)
+            val_data_list = [val_images_list, val_labels_list]
+
+            hyparams = lambda_x[lambda_index_outer: lambda_index_outer+args.batch_size]
+            outer_update = stocbio([parameters], hyparams, val_data_list, args, out_f, reg_f)
 
         else:
             inner_losses = []
@@ -339,27 +293,27 @@ def nositify(labels, noise_rate, n_class):
 
 def build_val_data(args, val_index, images_list, labels_list, device):
     val_index = -(val_index)
-    val_data_list, val_labels_list = [], []
+    val_images_list, val_labels_list = [], []
     
     images, labels = images_list[val_index[0]], labels_list[val_index[0]]
     images = torch.reshape(images, (images.size()[0],-1)).to(device)
     labels = labels.to(device)
-    val_data_list.append(images)
+    val_images_list.append(images)
     val_labels_list.append(labels)
 
     images, labels = images_list[val_index[1]], labels_list[val_index[1]]
     images = torch.reshape(images, (images.size()[0],-1)).to(device)
     labels_cp = nositify(labels, args.noise_rate, args.num_classes).to(device)
-    val_data_list.append(images)
+    val_images_list.append(images)
     val_labels_list.append(labels_cp)
 
     images, labels = images_list[val_index[2]], labels_list[val_index[2]]
     images = torch.reshape(images, (images.size()[0],-1)).to(device)
     labels_cp = nositify(labels, args.noise_rate, args.num_classes).to(device)
-    val_data_list.append(images)
+    val_images_list.append(images)
     val_labels_list.append(labels_cp)
 
-    return [val_data_list, val_labels_list]
+    return [val_images_list, val_labels_list]
 
 
 def main():
