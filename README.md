@@ -8,7 +8,7 @@ The experiments based on 20 Newsgroup and MNIST datasets are in [l2reg_on_twenty
 
 ### How to run our code
 
-We introduce some basic args meanning in the following.
+We introduce some basic args meanning as follows.
 
 #### Args meaning
 
@@ -22,8 +22,8 @@ We introduce some basic args meanning in the following.
 + `--eta`: Hyperparameter $\eta$ for Hessian inverse approximation.
 + `--noise_rate`: The corruption rate for MNIST data.
 
-To implement the code with different datasets, please run the following code:
-
+To replicate empirical results under different datasets in our paper, please run the following commands:
+ 
 #### stocBiO in MNIST with p=0.1
 
 ```python
