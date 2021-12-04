@@ -59,6 +59,21 @@ python3 l2reg_on_twentynews.py --alg AID-FP
 ## ITD-BiO and FO-ITD-BiO for meta-learning
 Our meta-learning part is built on [learn2learn](https://github.com/learnables/learn2learn), where we implement the bilevel optimizer ITD-BiO and show that it converges faster than MAML and ANIL. Note that we also implement first-order ITD-BiO (FO-ITD-BiO) without computing the derivative of the inner-loop output with respect to feature parameters, i.e., removing all Jacobian and Hessian-vector calculations. It turns out that FO-ITD-BiO is even faster without sacrificing overall prediction accuracy.  
 
+
+We suggest the following computer environments to run our code. 
+
+For Windows OS, 
++ PyTorch=1.7.1
++ l2l=0.1.5 (an old version is suggested here. Some adaptations needed for latest versions.)
++ python=3.8
++ cuda=11.3
+
+For Linux OS,
++ PyTorch=1.7.0
++ l2l=0.1.5
++ python=3.6.9
++ cuda=10.2
+
 ## Some experiment examples
 
 In the following, we provide some experiments to demonstrate the better performance of the proposed stoc-BiO algorithm. 
