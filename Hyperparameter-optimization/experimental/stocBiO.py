@@ -39,7 +39,10 @@ def gradient_fy(args, labels, params, data, output):
     return grad
 
 def gradient_gy(args, labels_cp, params, data, hparams, output, reg_f):
-    loss = F.cross_entropy(output, labels_cp)
+    # For MNIST data-hyper cleaning experiments
+    loss = F.cross_entropy(output, labels_cp, reduction='none')
+    # For NewsGroup l2reg expriments
+    # loss = F.cross_entropy(output, labels_cp)
     loss_regu = reg_f(params, hparams, loss)
     grad = torch.autograd.grad(loss_regu, params, create_graph=True)[0]
     return grad
