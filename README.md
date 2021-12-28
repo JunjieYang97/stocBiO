@@ -4,6 +4,8 @@ Codes for ICML 2021 paper [Bilevel Optimization: Nonasymptotic Analysis and Fast
 ## stocBiO for hyperparameter optimization
 Our hyperparameter optimization implementation is bulit on [HyperTorch](https://github.com/prolearner/hypertorch), where we propose stoc-BiO algorithm with better performance than other bilevel algorithms. Our code is tested on python3 and PyTorch1.8. 
 
+Note that hypergrad package is built on  [HyperTorch](https://github.com/prolearner/hypertorch).
+
 The experiments based on 20 Newsgroup and MNIST datasets are in [l2reg_on_twentynews.py](https://github.com/JunjieYang97/stocBiO/blob/master/Hyperparameter-optimization/experimental/l2reg_on_twentynews.py) and [mnist_exp.py](https://github.com/JunjieYang97/stocBiO/blob/master/Hyperparameter-optimization/experimental/mnist_exp.py), respectively.
 
 ### How to run our code
