@@ -228,6 +228,7 @@ def train_model(args, train_loader, test_loader):
         outer_update = torch.squeeze(outer_update)
         with torch.no_grad():
             weight = weight - args.outer_lr*outer_update
+            lambda_x[lambda_index_outer: lambda_index_outer+args.batch_size] = weight
        
         lambda_index_outer = (lambda_index_outer+args.batch_size) % args.training_size
 
